@@ -12,7 +12,7 @@ class LoginStressTest(HttpUser):
 
     def get_token(self):
         """Authenticate using Basic Auth and retrieve access token"""
-        auth_url = "http://192.168.201.107:443/Login"  # Change to https if required
+        auth_url = "http://192.168.201.70:443/Login"  # Change to https if required
 
         headers = {
             "DeviceName": "ActiveSystemsTablet"
