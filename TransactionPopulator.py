@@ -1,14 +1,22 @@
 from locust import HttpUser, task, between
 from faker import Faker
-import json
 import logging
 import random
+import json
 
-# Initialize Faker and logging
+# Initialize
 fake = Faker()
 logging.basicConfig(level=logging.INFO)
 
-# Reference items (you can load this list from a file if needed)
+# Constants
+USERNAME = "Admin"
+PASSWORD = "1"
+DEVICE_NAME = "ActiveSystemsTablet"
+DEFAULT_IMAGE = "sample-image.jpg"
+AUTH_URL = "/Login"
+TRANSACTIONS_URL = "/Transactions"
+
+# Reference items
 reference_items = [
     {"Id": 2980, "Code": "FCM", "Description": "Fried Chicken Meal", "Price": 150},
     {"Id": 2985, "Code": "2FCM", "Description": "2pc Fried Chicken Meal", "Price": 155},
@@ -21,116 +29,111 @@ reference_items = [
     {"Id": 3016, "Code": "CC", "Description": "Cheese Cake", "Price": 95},
     {"Id": 2999, "Code": "HB", "Description": "Hot Brew", "Price": 65},
     {"Id": 2997, "Code": "IC", "Description": "Iced Chocoffee", "Price": 75},
-    {"Id": 3035, "Code": "010660", "Description": "Refreshing chilled drink with natural fruit flavor blend.", "Price": 45},
+    {"Id": 3035, "Code": "010660", "Description": "Refreshing chilled drink", "Price": 45},
     {"Id": 3002, "Code": "SSM", "Description": "Summer Shake Mango", "Price": 75},
     {"Id": 3004, "Code": "SSP", "Description": "Summer Shake Pineapple", "Price": 75},
     {"Id": 2995, "Code": "CM", "Description": "Coke Medium", "Price": 30}
 ]
 
-# Mapping of referenceItem Id to the correct Item Id the system expects
 id_mapping = {
-    2980: 2,  # Fried Chicken Meal
-    2985: 3,  # 2pc Fried Chicken Meal
-    2987: 4,  # 10pc Fried Chicken Bucket
-    2979: 5,  # Extra Rice
-    2989: 6,  # Chicken Nuggets
-    # Add other mappings as needed
+    2980: 2, 2985: 4, 2987: 20, 2979: 1, 2989: 7,
+    3010: 10, 3013: 11, 3014: 22, 3016: 12, 2999: 6,
+    2997: 8, 3035: 21, 3002: 9, 3004: 24, 2995: 5
 }
 
 class MyUser(HttpUser):
     wait_time = between(1, 5)
 
-    auth_url = "/Login"
-    transactions_url = "/Transactions"
-    headers = {
-        "DeviceName": "ActiveSystemsTablet",
-        "Content-Type": "application/json"
-    }
-
-    def get_token(self):
-        """Authenticate and return access token."""
-        response = self.client.post(self.auth_url, auth=("Admin", "1"), headers=self.headers)
-        if response.status_code == 200:
-            try:
-                token = response.json().get("token")
-                if token:
-                    return token
-                logging.warning("Token not found in response.")
-            except json.JSONDecodeError:
-                logging.error("Failed to parse JSON response.")
-        else:
-            logging.error(f"Failed to retrieve token: {response.status_code} - {response.text}")
-        return None
-
     def on_start(self):
         self.token = self.get_token()
+
+    def get_token(self):
+        headers = {"DeviceName": DEVICE_NAME, "Content-Type": "application/json"}
+        response = self.client.post(AUTH_URL, auth=(USERNAME, PASSWORD), headers=headers)
+        if response.status_code == 200:
+            try:
+                return response.json().get("token")
+            except json.JSONDecodeError:
+                logging.error("JSON decode error.")
+        logging.error(f"Token retrieval failed: {response.status_code}")
+        return None
+
+    def generate_invoice_items(self, count=2):
+        items = []
+        total_price = 0
+
+        for _ in range(count):
+            ref_item = random.choice(reference_items)
+            mapped_id = id_mapping.get(ref_item["Id"])
+            if not mapped_id:
+                continue
+
+            qty = random.randint(1, 3)
+            subtotal = ref_item["Price"] * qty
+
+            items.append({
+                "Id": 0,
+                "Item": {
+                    "Id": mapped_id,
+                    "ReferenceItem": {
+                        "Id": ref_item["Id"],
+                        "Code": ref_item["Code"],
+                        "Description": ref_item["Description"],
+                        "UnitOfMeasure": "",
+                        "Taxable": 1,
+                        "Price": ref_item["Price"]
+                    },
+                    "Image": DEFAULT_IMAGE,
+                    "Subcategory": None,
+                    "Category": None
+                },
+                "Quantity": qty,
+                "Discounts": [],
+                "Amount": subtotal,
+                "DiscountAmount": 0.0,
+                "DiscountedAmount": subtotal,
+                "UniqueId": "TAureliusInvoiceItem"
+            })
+
+            total_price += subtotal
+
+        return items, total_price
 
     @task
     def post_invoice(self):
         if not self.token:
             self.token = self.get_token()
             if not self.token:
-                logging.warning("No token available. Skipping transaction.")
+                logging.warning("Token unavailable. Skipping task.")
                 return
 
-        now = fake.date_time_this_year().isoformat()
+        invoice_items, total_price = self.generate_invoice_items()
 
-        # Randomly select an item from the reference list
-        item = random.choice(reference_items)
-
-        # Map the referenceItem's Id to the actual Item's Id
-        mapped_item_id = id_mapping.get(item["Id"])
-
-        if not mapped_item_id:
-            logging.error(f"Mapping for Item with referenceId {item['Id']} not found.")
+        if not invoice_items:
+            logging.warning("No valid items generated.")
             return
+
+        now = fake.date_time_this_year().isoformat()
+        vat = round(total_price * 0.12, 2)
+        total_after_vat = round(total_price + vat, 2)
 
         json_data = {
             "Id": 0,
-            "TotalPayment": item["Price"],
+            "TotalPayment": total_price,
             "AmountDue": 0.0,
             "DateTime": now,
             "PrintName": "",
             "Address": "",
             "TinNumber": "",
             "BusinessStyle": "",
-            "Payments": [
-                {
-                    "Amount": item["Price"],
-                    "PaymentType": "Cash"
-                }
-            ],
+            "Payments": [{"Amount": total_price, "PaymentType": "Cash"}],
             "Invoice": {
                 "Id": 0,
                 "GuestDetail": {
-                    "Count": 0,
-                    "Guests": []
+                    "Count": 1,
+                    "Guests": [{"Name": fake.first_name()}]
                 },
-                "InvoiceItems": [
-                    {
-                        "Id": 0,
-                        "Item": {
-                            "Id": mapped_item_id,  # Use the mapped Item Id
-                            "ReferenceItem": {
-                                "Id": item["Id"],
-                                "Code": item["Code"],
-                                "Description": item["Description"],
-                                "UnitOfMeasure": "",
-                                "Taxable": 1,
-                                "Price": item["Price"]
-                            },
-                            "Image": "sample-image.jpg",  # Use a generic image
-                            "Subcategory": None,
-                            "Category": None
-                        },
-                        "Quantity": 1,
-                        "Discounts": [],
-                        "Amount": item["Price"],
-                        "DiscountAmount": 0.0,
-                        "DiscountedAmount": item["Price"],
-                        "UniqueId": "TAureliusInvoiceItem"
-                    }
-                ],
+                "InvoiceItems": invoice_items,
                 "Discounts": None,
                 "Coupons": [],
                 "Table": None,
@@ -139,7 +142,7 @@ class MyUser(HttpUser):
                     "Image": "ff299968-d908-4f60-90aa-89e0595acb3f.jpg",
                     "UserAccount": {
                         "Id": 1,
-                        "Name": "Admin",
+                        "Name": USERNAME,
                         "Description": "Administrator",
                         "Password": "",
                         "PwdCreatedOn": "2020-09-16T08:50:24.000",
@@ -147,36 +150,28 @@ class MyUser(HttpUser):
                         "ContactId": 2348,
                         "Contact": None,
                         "RegisteredById": 0,
-                        "LockoutCounter": 0,
-                        "LockoutOn": None,
-                        "ExpirationDate": None,
-                        "LoginFailedOn": None
+                        "LockoutCounter": 0
                     },
                     "AuthorizedScreen": []
                 },
-                "Subtotal": item["Price"],
+                "Subtotal": total_price,
                 "InvoiceStatus": "Void",
                 "DiningOption": "DineIn",
                 "DiscountTotal": 0.0,
                 "SeniorCitizenDiscount": 0.0,
                 "PersonWithDisabilityDiscount": 0.0,
-                "SalesRepresentative": None,
-                "Customer": {
-                    "Id": 1,
-                    "Image": "",
-                    "Contact": None
-                },
+                "Customer": {"Id": 1, "Image": "", "Contact": None},
                 "VatTypes": None,
                 "VatRate": 0.12,
-                "VatableSales": item["Price"],
-                "VatAmount": item["Price"] * 0.12,
+                "VatableSales": total_price,
+                "VatAmount": vat,
                 "VatExemptSales": 0.0,
                 "ZeroRatedSales": 0.0,
-                "TotalAfterVat": item["Price"] * 1.12,
+                "TotalAfterVat": total_after_vat,
                 "ReprintCount": 0,
                 "Salesorders": None
             },
-            "TotalCashPayment": item["Price"],
+            "TotalCashPayment": total_price,
             "TotalGCashPayment": 0.0,
             "TotalPayMayaPayment": 0.0,
             "TotalVisaPayment": 0.0,
@@ -186,18 +181,18 @@ class MyUser(HttpUser):
 
         headers_with_auth = {
             "Authorization": f"Bearer {self.token}",
-            "DeviceName": "ActiveSystemsTablet",
+            "DeviceName": DEVICE_NAME,
             "Content-Type": "application/json"
         }
 
-        with self.client.post(self.transactions_url, json=json_data, headers=headers_with_auth, catch_response=True) as response:
+        with self.client.post(TRANSACTIONS_URL, json=json_data, headers=headers_with_auth, catch_response=True) as response:
             if response.status_code == 401:
-                logging.warning("Token expired, refreshing...")
+                logging.warning("Token expired. Retrying...")
                 self.token = self.get_token()
-                response.failure("Unauthorized. Token expired.")
+                response.failure("Unauthorized.")
             elif response.status_code != 200:
-                logging.error(f"Transaction failed: {response.status_code} - {response.text}")
+                logging.error(f"Failed: {response.status_code} - {response.text}")
                 response.failure("Transaction failed.")
             else:
                 response.success()
-                logging.info("Transaction succeeded.")
+                logging.info("Invoice transaction successful.")
