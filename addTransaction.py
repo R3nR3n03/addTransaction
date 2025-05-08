@@ -1,96 +1,152 @@
 from locust import HttpUser, task, between
+from faker import Faker
+import logging
+import random
 import json
 
+# Initialize
+fake = Faker()
+logging.basicConfig(level=logging.INFO)
+
+# Constants
+USERNAME = "Admin"
+PASSWORD = "1"
+DEVICE_NAME = "QA-EMULATOR"
+DEFAULT_IMAGE = "sample-image.jpg"
+AUTH_URL = "/Login"
+TRANSACTIONS_URL = "/Transactions"
+
+# Reference items
+reference_items = [
+    {"Id": 2980, "Code": "FCM", "Description": "Fried Chicken Meal", "Price": 150},
+    {"Id": 2985, "Code": "2FCM", "Description": "2pc Fried Chicken Meal", "Price": 155},
+    {"Id": 2987, "Code": "10FCB", "Description": "10pc Fried Chicken Bucket", "Price": 600},
+    {"Id": 2979, "Code": "ER", "Description": "Extra Rice", "Price": 15},
+    {"Id": 2989, "Code": "CN", "Description": "Chicken Nuggets", "Price": 55},
+    {"Id": 3010, "Code": "CFM", "Description": "Cheesy Fries Medium", "Price": 50},
+    {"Id": 3013, "Code": "CFL", "Description": "Cheesy Fries Large", "Price": 80},
+    {"Id": 3014, "Code": "CFF", "Description": "Cheesy Fries Family", "Price": 120},
+    {"Id": 3016, "Code": "CC", "Description": "Cheese Cake", "Price": 95},
+    {"Id": 2999, "Code": "HB", "Description": "Hot Brew", "Price": 65},
+    {"Id": 2997, "Code": "IC", "Description": "Iced Chocoffee", "Price": 75},
+    {"Id": 3035, "Code": "010660", "Description": "Refreshing chilled drink", "Price": 45},
+    {"Id": 3002, "Code": "SSM", "Description": "Summer Shake Mango", "Price": 75},
+    {"Id": 3004, "Code": "SSP", "Description": "Summer Shake Pineapple", "Price": 75},
+    {"Id": 2995, "Code": "CM", "Description": "Coke Medium", "Price": 30}
+]
+
+id_mapping = {
+    2980: 2, 2985: 4, 2987: 20, 2979: 1, 2989: 7,
+    3010: 10, 3013: 11, 3014: 22, 3016: 12, 2999: 6,
+    2997: 8, 3035: 21, 3002: 9, 3004: 24, 2995: 5
+}
 
 class MyUser(HttpUser):
-    wait_time = between(1, 5)  # Simulate user behavior with a wait time
-
-    # Use relative URL for Locust
-    auth_url = "/Login"
-    transactions_url = "/Transactions"
-    headers = {
-        "DeviceName": "ActiveSystemsTablet",
-        "Content-Type": "application/json"
-    }
-
-    def get_token(self):
-        """Authenticate and return access token."""
-        response = self.client.post(self.auth_url, auth=("Admin", "1"), headers=self.headers)
-        #print("Auth Response:", response.status_code, response.text)  # Debugging
-
-        if response.status_code == 200:
-            try:
-                token = response.json().get("token")  # Ensure correct key
-                if token:
-                    return token
-                else:
-                    print("Token not found in response.")
-            except json.JSONDecodeError:
-                print("Failed to parse JSON response.")
-        else:
-            print("Failed to retrieve token")
-
-        return None
+    wait_time = between(1, 5)
 
     def on_start(self):
-        """Runs once per user at the start of the test."""
         self.token = self.get_token()
+
+    def get_token(self, max_retries=3):
+        headers = {"DeviceName": DEVICE_NAME, "Content-Type": "application/json"}
+        retries = 0
+
+        while retries < max_retries:
+            response = self.client.post(AUTH_URL, auth=(USERNAME, PASSWORD), headers=headers)
+            if response.status_code == 200:
+                try:
+                    token = response.json().get("token")
+                    if token:
+                        return token
+                    else:
+                        logging.error("Token not found in response JSON.")
+                        break
+                except json.JSONDecodeError:
+                    logging.error("JSON decode error.")
+            else:
+                logging.warning(f"Token retrieval failed (attempt {retries + 1}): {response.status_code}")
+
+            retries += 1
+
+        logging.error("Exceeded max retries for token retrieval.")
+        return None
+
+    def generate_invoice_items(self, count=2):
+        items = []
+        total_price = 0
+
+        for _ in range(count):
+            ref_item = random.choice(reference_items)
+            mapped_id = id_mapping.get(ref_item["Id"])
+            if not mapped_id:
+                continue
+
+            qty = random.randint(1, 3)
+            subtotal = ref_item["Price"] * qty
+
+            items.append({
+                "Id": 0,
+                "Item": {
+                    "Id": mapped_id,
+                    "ReferenceItem": {
+                        "Id": ref_item["Id"],
+                        "Code": ref_item["Code"],
+                        "Description": ref_item["Description"],
+                        "UnitOfMeasure": "",
+                        "Taxable": 1,
+                        "Price": ref_item["Price"]
+                    },
+                    "Image": DEFAULT_IMAGE,
+                    "Subcategory": None,
+                    "Category": None
+                },
+                "Quantity": qty,
+                "Discounts": [],
+                "Amount": subtotal,
+                "DiscountAmount": 0.0,
+                "DiscountedAmount": subtotal,
+                "UniqueId": "TAureliusInvoiceItem"
+            })
+
+            total_price += subtotal
+
+        return items, total_price
 
     @task
     def post_invoice(self):
-        """Send a POST request with the provided JSON body."""
         if not self.token:
-            self.token = self.get_token()  # Refresh token if needed
+            self.token = self.get_token()
             if not self.token:
-                print("No token available. Skipping transaction.")
+                logging.warning("Token unavailable. Skipping task.")
                 return
+
+        invoice_items, total_price = self.generate_invoice_items()
+
+        if not invoice_items:
+            logging.warning("No valid items generated.")
+            return
+
+        now = fake.date_time_this_year().isoformat()
+        vat = round(total_price * 0.12, 2)
+        total_after_vat = round(total_price + vat, 2)
 
         json_data = {
             "Id": 0,
-            "TotalPayment": 100.0,
+            "TotalPayment": total_price,
             "AmountDue": 0.0,
-            "DateTime": "2025-04-04T11:25:58.698",
+            "DateTime": now,
             "PrintName": "",
             "Address": "",
             "TinNumber": "",
             "BusinessStyle": "",
-            "Payments": [
-                {
-                    "Amount": 100.0,
-                    "PaymentType": "Cash"
-                }
-            ],
+            "Payments": [{"Amount": total_price, "PaymentType": "Cash"}],
             "Invoice": {
                 "Id": 0,
                 "GuestDetail": {
-                    "Count": 0,
-                    "Guests": []
+                    "Count": 1,
+                    "Guests": [{"Name": fake.first_name()}]
                 },
-                "InvoiceItems": [
-                    {
-                        "Id": 0,
-                        "Item": {
-                            "Id": 2,
-                            "ReferenceItem": {
-                                "Id": 2980,
-                                "Code": "FCM",
-                                "Description": "Fried Chicken Meal",
-                                "UnitOfMeasure": "",
-                                "Taxable": 1,
-                                "Price": 100.0
-                            },
-                            "Image": "ee487ab6-6203-4d43-a3fd-3c919706073e.jpg",
-                            "Subcategory": None,
-                            "Category": None
-                        },
-                        "Quantity": 1,
-                        "Discounts": [],
-                        "Amount": 100.0,
-                        "DiscountAmount": 0.0,
-                        "DiscountedAmount": 100.0,
-                        "UniqueId": "TAureliusInvoiceItem"
-                    }
-                ],
+                "InvoiceItems": invoice_items,
                 "Discounts": None,
                 "Coupons": [],
                 "Table": None,
@@ -99,7 +155,7 @@ class MyUser(HttpUser):
                     "Image": "ff299968-d908-4f60-90aa-89e0595acb3f.jpg",
                     "UserAccount": {
                         "Id": 1,
-                        "Name": "Admin",
+                        "Name": USERNAME,
                         "Description": "Administrator",
                         "Password": "",
                         "PwdCreatedOn": "2020-09-16T08:50:24.000",
@@ -107,50 +163,49 @@ class MyUser(HttpUser):
                         "ContactId": 2348,
                         "Contact": None,
                         "RegisteredById": 0,
-                        "LockoutCounter": 0,
-                        "LockoutOn": None,
-                        "ExpirationDate": None,
-                        "LoginFailedOn": None
+                        "LockoutCounter": 0
                     },
                     "AuthorizedScreen": []
                 },
-                "Subtotal": 100.0,
+                "Subtotal": total_price,
                 "InvoiceStatus": "Void",
                 "DiningOption": "DineIn",
                 "DiscountTotal": 0.0,
                 "SeniorCitizenDiscount": 0.0,
                 "PersonWithDisabilityDiscount": 0.0,
-                "SalesRepresentative": None,
-                "Customer": {
-                    "Id": 1,
-                    "Image": "",
-                    "Contact": None
-                },
+                "Customer": {"Id": 1, "Image": "", "Contact": None},
                 "VatTypes": None,
                 "VatRate": 0.12,
-                "VatableSales": 100.0,
-                "VatAmount": 10.7143,
+                "VatableSales": total_price,
+                "VatAmount": vat,
                 "VatExemptSales": 0.0,
                 "ZeroRatedSales": 0.0,
-                "TotalAfterVat": 100.0,
+                "TotalAfterVat": total_after_vat,
                 "ReprintCount": 0,
                 "Salesorders": None
             },
-            "TotalCashPayment": 100.0,
+            "TotalCashPayment": total_price,
             "TotalGCashPayment": 0.0,
             "TotalPayMayaPayment": 0.0,
             "TotalVisaPayment": 0.0,
             "TotalMastercardPayment": 0.0,
             "TotalCheckPayment": 0.0
+        }
 
-    }
-
-        # Ensure Authorization is included in the request
         headers_with_auth = {
             "Authorization": f"Bearer {self.token}",
-            "DeviceName": "ActiveSystemsTablet",
+            "DeviceName": DEVICE_NAME,
             "Content-Type": "application/json"
         }
 
-        response = self.client.post(self.transactions_url, data=json.dumps(json_data), headers=headers_with_auth)
-        print("Transaction Response:", response.status_code, response.text)
+        with self.client.post(TRANSACTIONS_URL, json=json_data, headers=headers_with_auth, catch_response=True) as response:
+            if response.status_code == 401:
+                logging.warning("Token expired. Retrying...")
+                self.token = self.get_token()
+                response.failure("Unauthorized.")
+            elif response.status_code != 200:
+                logging.error(f"Failed: {response.status_code} - {response.text}")
+                response.failure("Transaction failed.")
+            else:
+                response.success()
+                logging.info("Invoice transaction successful.")

@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 # Constants
 USERNAME = "Admin"
 PASSWORD = "1"
-DEVICE_NAME = "ActiveSystemsTablet"
+DEVICE_NAME = "QA-EMULATOR"
 DEFAULT_IMAGE = "sample-image.jpg"
 AUTH_URL = "/Login"
 TRANSACTIONS_URL = "/Transactions"
